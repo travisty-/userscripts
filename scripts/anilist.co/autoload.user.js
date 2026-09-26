@@ -1,36 +1,36 @@
 // ==UserScript==
 // @name         AniList Activity Autoload
 // @namespace    traviskinney.co
-// @version      2026-09-05
-// @description  Floating button that bulk-clicks "Load More" on AniList activity feeds
+// @version      2026-09-26
+// @description  Floating button that loads every page of AniList activity feeds
 // @author       Travis Kinney
-// @match        https://anilist.co/user/*
+// @match        https://anilist.co/*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
+
+/**
+ * AniList renders a profile's activity feed as a Vue 2 component, reachable as
+ * `$el.__vue__` on `div.activity-feed-wrap`:
+ *
+ *   pager     { page, loading, hasNextPage, paused, scrollHandler }
+ *   filter    { activityChanging }
+ *
+ * `scrollHandler` loads the next page and sets `paused` (which shows "Load
+ * More") after every second one. A failed page stays counted in `page`, and
+ * `loading` stays set.
+ */
 
 (function () {
   "use strict";
 
   const FAB_ID = "al-autoload-fab";
-  const GROWTH_TIMEOUT_MS = 5000;
-  const POLL_INTERVAL_MS = 100;
+  const PROFILE_PATH = /^\/user\/[^/]+\/?$/; // activity feed
 
-  // Serial of the active run, 0 while stopped. A loop whose serial no longer
-  // matches was paused or superseded and exits silently.
-  let activeRun = 0;
-  let runs = 0;
-  let pageCount = 0;
+  // Pauses the active run, null while stopped.
+  let pauseRun = null;
   let buttonEl = null;
   let statusEl = null;
-
-  // AniList's control is a div.load-more, rendered only while the feed is paused.
-  const findLoadMoreButton = () => {
-    const element = document.querySelector(".load-more");
-    return element && element.offsetParent !== null ? element : null;
-  };
-
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   const injectStyles = () => {
     const style = document.createElement("style");
@@ -47,6 +47,7 @@
         font-family: 'Overpass', -apple-system, BlinkMacSystemFont, sans-serif;
         user-select: none;
       }
+      #${FAB_ID}[hidden] { display: none; }
       #${FAB_ID} .al-btn {
         background: rgb(61, 180, 242);
         color: white;
@@ -100,66 +101,99 @@
     buttonEl.textContent = isRunning ? "Pause" : "Autoload";
   };
 
-  const pagesLoaded = () =>
-    `${pageCount} ${pageCount === 1 ? "page" : "pages"} loaded`;
-
-  const finish = (message) => {
-    activeRun = 0;
-    setRunningUI(false);
-    setStatus(message);
+  const pagesLoaded = (feed) => {
+    const count = feed.loading ? feed.page - 1 : feed.page;
+    return `${count} ${count === 1 ? "page" : "pages"} loaded`;
   };
 
-  const waitFor = async (run, predicate, timeoutMs) => {
-    const deadline = Date.now() + timeoutMs;
-    while (activeRun === run && Date.now() < deadline) {
-      if (predicate()) return true;
-      await sleep(POLL_INTERVAL_MS);
+  const start = () => {
+    const feed = document.querySelector(".activity-feed-wrap")?.__vue__;
+    if (!feed) {
+      setStatus("No activity feed");
+      return;
     }
-    return false;
-  };
 
-  const start = async () => {
-    const run = ++runs;
-    activeRun = run;
-    setRunningUI(true);
+    const finish = (message) => {
+      unwatchLoading();
+      unwatchFilter();
+      feed.$off("hook:destroyed", pause);
+      pauseRun = null;
+      setRunningUI(false);
+      setStatus(message);
+    };
 
-    while (activeRun === run) {
-      setStatus(`Loading page ${pageCount + 1}...`);
-      const heightBefore = document.body.scrollHeight;
-      window.scrollTo({ top: heightBefore, behavior: "instant" });
-      const button = findLoadMoreButton();
-      if (button) button.click();
+    const pause = () => {
+      finish(pagesLoaded(feed));
+      if (!feed.loading) return;
+      // The page in flight still lands, so count it once it settles.
+      const page = feed.page;
+      const unwatch = feed.$watch("loading", () => {
+        unwatch();
+        if (!pauseRun && feed.page === page) setStatus(pagesLoaded(feed));
+      });
+    };
 
-      // The feed shows a spinner, which adds height of its own, while a
-      // request is in flight; growth counts once the spinner is gone.
-      const grew = await waitFor(
-        run,
-        () =>
-          document.body.scrollHeight > heightBefore &&
-          !document.querySelector(".scroller .emoji-spinner"),
-        GROWTH_TIMEOUT_MS,
-      );
-      if (activeRun !== run) return;
-      if (!grew) {
-        finish("All pages loaded");
-        return;
+    const loadPage = () => {
+      const page = feed.page + 1;
+      feed.paused = false;
+      feed.scrollHandler().catch(() => {
+        if (pauseRun === pause) finish(`Page ${page} failed to load`);
+        // Rewind the pager so the next run fetches the failed page again.
+        if (feed.loading && feed.page === page) {
+          feed.page -= 1;
+          feed.loading = false;
+        }
+      });
+    };
+
+    const loadNext = () => {
+      if (!feed.loading) {
+        window.scrollTo({
+          top: document.body.scrollHeight,
+          behavior: "instant",
+        });
+        if (!feed.hasNextPage) {
+          feed.paused = false; // hides the leftover "Load More"
+          finish("All pages loaded");
+          return;
+        }
+        loadPage();
       }
-      pageCount++;
-    }
+      setStatus(`Loading page ${feed.page}...`);
+    };
+
+    // A filter change resets the pager while the old page may still land. It
+    // also resets `loading`, and watchers run in creation order, so this one
+    // comes first.
+    const unwatchFilter = feed.$watch("activityChanging", () =>
+      finish("Filter changed"),
+    );
+    const unwatchLoading = feed.$watch("loading", loadNext);
+    // Vue drops these watchers with the feed, so the run ends with it.
+    feed.$once("hook:destroyed", pause);
+    pauseRun = pause;
+    setRunningUI(true);
+    loadNext();
   };
 
   const toggleRunning = () => {
-    if (activeRun) finish(pagesLoaded());
+    if (pauseRun) pauseRun();
     else start();
   };
 
   createButton();
 
-  // AniList navigates client-side (history.pushState) and remounts the feed on
-  // every route change, which ends a running load and restarts the page count.
+  const showOnProfile = () => {
+    const onProfile = PROFILE_PATH.test(location.pathname);
+    document.getElementById(FAB_ID).hidden = !onProfile;
+  };
+  showOnProfile();
+
+  // AniList navigates client-side (history.pushState) and keeps the feed when
+  // moving between profiles, so any route change ends a running load.
   const onNavigate = () => {
-    if (activeRun) finish(pagesLoaded());
-    pageCount = 0;
+    if (pauseRun) pauseRun();
+    showOnProfile();
   };
   window.addEventListener("popstate", onNavigate);
   const pushState = history.pushState.bind(history);
@@ -169,6 +203,6 @@
   };
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && activeRun) finish(pagesLoaded());
+    if (event.key === "Escape" && pauseRun) pauseRun();
   });
 })();
