@@ -4,7 +4,7 @@ My personal userscripts, managed with [Violentmonkey](https://violentmonkey.gith
 
 | Script                                                           | Description                                                                | Install                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------- |
-| [AniList Activity Autoload](scripts/anilist.co/autoload.user.js) | Adds a floating button that bulk-clicks "Load More" on activity feeds      | [Install][anilist-autoload]  |
+| [AniList Activity Autoload](scripts/anilist.co/autoload.user.js) | Adds a button to the user's profile that pages through the activity feed   | [Install][anilist-autoload]  |
 | [AniList Dashboard](scripts/anilist.co/dashboard.user.js)        | Updates the home dashboard to load the complete "In Progress" list preview | [Install][anilist-dashboard] |
 | [AniList Favorites](scripts/anilist.co/favorites.user.js)        | Overrides the reorder button to load all favorites and sort them by title  | [Install][anilist-favorites] |
 | [Nyaa Search Extensions](scripts/nyaa.si/search.user.js)         | Adds a wider search bar and support for date filtering with auto-paging    | [Install][nyaa-search]       |
